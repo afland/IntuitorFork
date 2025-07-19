@@ -6,8 +6,8 @@ Test script for MATH Benchmark to verify setup and imports.
 import os
 import sys
 
-# Add the parent directory to the path to import from verl
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+# Add the verl-intuitor directory to the path to import from verl
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'verl-intuitor'))
 
 def test_imports():
     """Test all required imports."""

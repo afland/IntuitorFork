@@ -22,8 +22,8 @@ from tqdm import tqdm
 from transformers import AutoTokenizer
 from vllm import LLM, SamplingParams
 
-# Add the parent directory to the path to import from verl
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+# Add the verl-intuitor directory to the path to import from verl
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'verl-intuitor'))
 
 from verl.utils.reward_score.math import last_boxed_only_string, remove_boxed, is_equiv
 from verl.utils.torch_functional import self_certainty_from_logits
