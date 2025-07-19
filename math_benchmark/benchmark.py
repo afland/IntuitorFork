@@ -3,7 +3,7 @@
 MATH Benchmark with Self-Certainty
 
 This script benchmarks models on the MATH dataset and computes self-certainty scores
-using the same logic as the verl-intuitor training pipeline.
+without relying on verl dependencies.
 """
 
 import json
@@ -16,19 +16,14 @@ import warnings
 import datasets
 import numpy as np
 import torch
-import torch.distributed as dist
+import torch.nn.functional as F
 from omegaconf import OmegaConf
 from tqdm import tqdm
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, AutoModelForCausalLM
 from vllm import LLM, SamplingParams
 
-# Add the verl-intuitor directory to the path to import from verl
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'verl-intuitor'))
-
-from verl.utils.reward_score.math import last_boxed_only_string, remove_boxed, is_equiv
-from verl.utils.torch_functional import self_certainty_from_logits
-from verl.workers.actor.dp_actor import DataParallelPPOActor
-from verl import DataProto
+# Import our standalone math utilities
+from math_utils import last_boxed_only_string, remove_boxed, is_equiv
 
 # Suppress warnings
 warnings.filterwarnings("ignore")
@@ -58,6 +53,23 @@ def create_math_prompt(problem: str) -> str:
     return f"{problem} {instruction}"
 
 
+def self_certainty_from_logits(logits: torch.Tensor) -> torch.Tensor:
+    """Calculate self-certainty from logits: logsumexp - mean."""
+    return torch.logsumexp(logits, dim=-1) - logits.mean(dim=-1)
+
+
+def logprobs_from_logits(logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+    """Compute log probabilities from logits and labels."""
+    # Ensure we have the right shape
+    assert logits.shape[:-1] == labels.shape, f"Shape mismatch: {logits.shape} vs {labels.shape}"
+    
+    # Use log_softmax for numerical stability
+    log_probs = F.log_softmax(logits, dim=-1)
+    
+    # Gather the log probabilities for the target labels
+    return log_probs.gather(dim=-1, index=labels.unsqueeze(-1)).squeeze(-1)
+
+
 class MATHBenchmark:
     def __init__(self, config_path: str):
         """Initialize the benchmark with configuration."""
@@ -72,11 +84,11 @@ class MATHBenchmark:
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
             
-        # Initialize vLLM engine
+        # Initialize vLLM engine for generation
         self.llm = self._init_vllm()
         
-        # Initialize actor for self-certainty computation
-        self.actor = self._init_actor()
+        # Initialize model for self-certainty computation
+        self.model = self._init_model()
         
         # Load dataset
         self.dataset = self._load_dataset()
@@ -96,27 +108,16 @@ class MATHBenchmark:
             trust_remote_code=self.config.model.trust_remote_code,
         )
     
-    def _init_actor(self):
-        """Initialize actor module for self-certainty computation."""
-        # Use AutoModelForCausalLM directly
-        from transformers import AutoModelForCausalLM
+    def _init_model(self):
+        """Initialize model for self-certainty computation."""
         model = AutoModelForCausalLM.from_pretrained(
             self.config.model.path,
             torch_dtype=getattr(torch, self.config.rollout.dtype),
             trust_remote_code=self.config.model.trust_remote_code,
             device_map="auto"
         )
-        
-        # Create actor config
-        actor_config = OmegaConf.create({
-            "use_remove_padding": self.config.actor.use_remove_padding,
-            "enable_gradient_checkpointing": self.config.actor.enable_gradient_checkpointing,
-            "self_certainty_from_logits_with_chunking": self.config.actor.self_certainty_from_logits_with_chunking,
-            "self_certainty_checkpointing": self.config.actor.self_certainty_checkpointing,
-            "use_torch_compile": False,
-        })
-        
-        return DataParallelPPOActor(actor_config, model)
+        model.eval()
+        return model
     
     def _load_dataset(self):
         """Load the MATH dataset."""
@@ -159,13 +160,16 @@ class MATHBenchmark:
             input_sequences.append(full_sequence)
             response_lengths.append(len(response_tokens))
         
-        # Pad sequences
+        # Find max length for padding
         max_length = max(len(seq) for seq in input_sequences)
+        
+        # Pad sequences and create attention masks
         padded_sequences = []
         attention_masks = []
         
         for seq in input_sequences:
             padding_length = max_length - len(seq)
+            # Pad on the left
             padded_seq = [self.tokenizer.pad_token_id] * padding_length + seq
             attention_mask = [0] * padding_length + [1] * len(seq)
             
@@ -175,33 +179,32 @@ class MATHBenchmark:
         # Convert to tensors
         input_ids = torch.tensor(padded_sequences, device=self.device)
         attention_mask = torch.tensor(attention_masks, device=self.device)
-        position_ids = torch.arange(max_length, device=self.device).unsqueeze(0).expand(len(input_sequences), -1)
         
-        # Create micro batch
-        micro_batch = {
-            "input_ids": input_ids,
-            "attention_mask": attention_mask,
-            "position_ids": position_ids,
-            "responses": torch.zeros((len(input_sequences), max(response_lengths)), dtype=torch.long, device=self.device)
-        }
-        
-        # Compute self-certainty using actor
+        # Compute logits using the model
         with torch.no_grad():
-            _, _, self_certainty = self.actor._forward_micro_batch(
-                micro_batch, 
-                temperature=1.0, 
-                calculate_entropy=False, 
-                calculate_self_certainty=True
-            )
+            outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
+            logits = outputs.logits  # Shape: [batch_size, seq_len, vocab_size]
         
-        # Extract self-certainty for response tokens and compute mean
+        # Compute self-certainty for response tokens only
         self_certainty_scores = []
         for i, response_length in enumerate(response_lengths):
-            if self_certainty is not None and response_length > 0:
-                # Get self-certainty for response tokens only
-                response_certainty = self_certainty[i, -response_length:]
-                mean_certainty = response_certainty.mean().item()
-                self_certainty_scores.append(mean_certainty)
+            if response_length > 0:
+                # Get logits for response tokens
+                # Response tokens start at position: total_length - response_length
+                total_length = attention_mask[i].sum().item()
+                start_pos = total_length - response_length
+                end_pos = total_length
+                
+                # Extract response logits (exclude the last token since we can't predict beyond it)
+                response_logits = logits[i, start_pos:end_pos-1]  # [response_length-1, vocab_size]
+                
+                if response_logits.size(0) > 0:
+                    # Compute self-certainty for each token and take the mean
+                    certainty = self_certainty_from_logits(response_logits)  # [response_length-1]
+                    mean_certainty = certainty.mean().item()
+                    self_certainty_scores.append(mean_certainty)
+                else:
+                    self_certainty_scores.append(0.0)
             else:
                 self_certainty_scores.append(0.0)
         

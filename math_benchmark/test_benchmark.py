@@ -6,8 +6,6 @@ Test script for MATH Benchmark to verify setup and imports.
 import os
 import sys
 
-# Add the verl-intuitor directory to the path to import from verl
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'verl-intuitor'))
 
 def test_imports():
     """Test all required imports."""
@@ -48,33 +46,12 @@ def test_imports():
         print(f"✗ OmegaConf import failed: {e}")
         return False
     
-    # Test verl imports
+    # Test our standalone math utils
     try:
-        from verl.utils.reward_score.math import last_boxed_only_string, remove_boxed, is_equiv
-        print("✓ VERL math utils")
+        from math_utils import last_boxed_only_string, remove_boxed, is_equiv
+        print("✓ Standalone math utils")
     except ImportError as e:
-        print(f"✗ VERL math utils import failed: {e}")
-        return False
-    
-    try:
-        from verl.utils.torch_functional import self_certainty_from_logits
-        print("✓ VERL torch functional")
-    except ImportError as e:
-        print(f"✗ VERL torch functional import failed: {e}")
-        return False
-    
-    try:
-        from verl.workers.actor.dp_actor import DataParallelPPOActor
-        print("✓ VERL DataParallelPPOActor")
-    except ImportError as e:
-        print(f"✗ VERL DataParallelPPOActor import failed: {e}")
-        return False
-    
-    try:
-        from verl import DataProto
-        print("✓ VERL DataProto")
-    except ImportError as e:
-        print(f"✗ VERL DataProto import failed: {e}")
+        print(f"✗ Standalone math utils import failed: {e}")
         return False
     
     return True
@@ -124,7 +101,7 @@ def test_math_functions():
     print("\nTesting math functions...")
     
     try:
-        from verl.utils.reward_score.math import last_boxed_only_string, remove_boxed, is_equiv
+        from math_utils import last_boxed_only_string, remove_boxed, is_equiv
         
         # Test with a simple example
         test_solution = "The answer is \\boxed{42}"
@@ -140,10 +117,33 @@ def test_math_functions():
         print(f"✗ Math functions failed: {e}")
         return False
 
+def test_model_loading():
+    """Test model loading (optional, since it requires GPU/large memory)."""
+    print("\nTesting model loading (optional)...")
+    
+    try:
+        from omegaconf import OmegaConf
+        from transformers import AutoTokenizer
+        
+        config_path = os.path.join(os.path.dirname(__file__), "config.yaml")
+        config = OmegaConf.load(config_path)
+        
+        # Just test tokenizer loading
+        tokenizer = AutoTokenizer.from_pretrained(
+            config.model.path,
+            trust_remote_code=config.model.trust_remote_code
+        )
+        print(f"✓ Tokenizer loaded successfully")
+        print(f"  Vocab size: {tokenizer.vocab_size}")
+        return True
+    except Exception as e:
+        print(f"⚠ Model/tokenizer loading failed (this may be expected): {e}")
+        return True  # Don't fail the test for this since it may require large downloads
+
 def main():
     """Run all tests."""
-    print("MATH Benchmark Setup Test")
-    print("=" * 30)
+    print("MATH Benchmark Setup Test (Standalone Version)")
+    print("=" * 50)
     
     all_passed = True
     
@@ -159,7 +159,10 @@ def main():
     if not test_math_functions():
         all_passed = False
     
-    print("\n" + "=" * 30)
+    if not test_model_loading():
+        all_passed = False
+    
+    print("\n" + "=" * 50)
     if all_passed:
         print("✓ All tests passed! Benchmark is ready to run.")
     else:
