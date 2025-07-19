@@ -1,0 +1,40 @@
+# MATH Benchmark Test Configuration (smaller model for testing)
+model:
+  path: microsoft/DialoGPT-small  # Small model for testing
+  trust_remote_code: false
+
+data:
+  dataset_name: DigitalLearningGmbH/MATH-lighteval
+  split: test
+  max_samples: 3  # Very small for initial testing
+  
+rollout:
+  name: vllm
+  mode: sync
+  temperature: 1.0
+  top_k: -1
+  top_p: 0.95
+  max_tokens: 512  # Shorter for testing
+  dtype: bfloat16
+  gpu_memory_utilization: 0.5  # Lower for testing
+  enforce_eager: true
+  free_cache_engine: true
+  tensor_model_parallel_size: 1
+  max_num_batched_tokens: 2048
+  disable_log_stats: true
+  enable_chunked_prefill: false  # Disable for testing
+
+actor:
+  micro_batch_size_per_gpu: 2
+  use_remove_padding: false  # Disable for testing
+  enable_gradient_checkpointing: false
+  self_certainty_from_logits_with_chunking: false
+  self_certainty_checkpointing: false
+
+output:
+  results_file: test_results.json
+  batch_size: 2
+  
+device:
+  device_name: cuda
+  world_size: 1 

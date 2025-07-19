@@ -1,0 +1,40 @@
+# MATH Benchmark Configuration
+model:
+  path: meta-llama/Meta-Llama-3-8B-Instruct
+  trust_remote_code: false
+
+data:
+  dataset_name: DigitalLearningGmbH/MATH-lighteval
+  split: test
+  max_samples: 10  # set to a number to limit samples for testing
+  
+rollout:
+  name: vllm
+  mode: sync
+  temperature: 1.0
+  top_k: -1
+  top_p: 0.95
+  max_tokens: 2048
+  dtype: bfloat16
+  gpu_memory_utilization: 0.85
+  enforce_eager: true
+  free_cache_engine: true
+  tensor_model_parallel_size: 1
+  max_num_batched_tokens: 8192
+  disable_log_stats: true
+  enable_chunked_prefill: true
+
+actor:
+  micro_batch_size_per_gpu: 4
+  use_remove_padding: true
+  enable_gradient_checkpointing: false
+  self_certainty_from_logits_with_chunking: false
+  self_certainty_checkpointing: false
+
+output:
+  results_file: results.json
+  batch_size: 8
+  
+device:
+  device_name: cuda
+  world_size: 1 
